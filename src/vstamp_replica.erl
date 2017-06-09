@@ -13,7 +13,8 @@
 
 %%% Testing
 -export([ start/2
-%        , get_log/1
+        , get_state/1
+        , get_log/1
         ]).
 
 %%% gen_server
@@ -25,10 +26,12 @@
         , terminate/2
         ]).
 
+-include("../include/vrtypes.hrl").
+
 -type replica() :: {name(), host()}.
 -type name() :: atom().
 -type host() :: atom().
--type config() :: tuple(replica()). %% {replica(), replica(), ...}
+-type config() :: [ replica() ].
 -type replica_num() :: non_neg_integer().
 -type view_num() :: non_neg_integer().
 -type op_num() :: non_neg_integer() | -1.
@@ -40,8 +43,6 @@
 -type client_table() :: map(token(), client_req_trace()).
 
 %%% Macros
--define(idx2elem(I), (I + 1)).
--define(elem2idx(E), (E - 1)).
 -define(cluster_size(T), tuple_size(T)).
 
 -define(WAIT, 7000).
@@ -65,16 +66,23 @@ request(Replica, Token, ReqNum, Op) ->
   gen_server:call(Replica, {'REQUEST', Token, ReqNum, Op}).
 
 %%% Testing
+% vstamp_replica:start(name, [{config, {{name, SName@SHost}}]).
 start(Name, Args) ->
   do_start(Name, Args, fun gen_server:start/4).
+
+get_state(Replica) ->
+  gen_server:call(Replica, get_state).
+
+get_log(Replica) ->
+  gen_server:call(Replica, get_log).
 
 %%% gen_server
 init(Args) ->
   Index = get_arg(index, Args),
-  View = 0,
+  View = 1,
   Config = get_arg(config, Args),
   Timeout = 0,
-  Commit = case index =:= 0 of
+  Commit = case index =:= 1 of
              true -> 0;
              _ -> undefined
            end,
@@ -82,15 +90,14 @@ init(Args) ->
 
 handle_call(get_client_token, _From, State = #state{req_trace=Trace}) ->
   Ref = make_ref(),
-  Timeout = case is_primary(State) of
-              true -> 0;
-              false -> ?WAIT
-            end,
   {reply,
    {ok, Ref},
    State#state{req_trace=maps:put(Ref, {-1, undefined}, Trace)},
-   Timeout};
-
+   get_timeout(State)};
+handle_call(get_state, _From, State) ->
+  {reply, {ok, State}, State, get_timeout(State)};
+handle_call(get_log, _From, State = #state{log=Log}) ->
+  {reply, {ok, Log}, State, get_timeout(State)};
 handle_call(R = {'REQUEST', Token, _ReqNum, _Op}, _From, State) ->
   case is_primary(State) of
     false -> {reply, {error, not_primary}, State, ?WAIT}; %% paper says drop, why?
@@ -104,11 +111,14 @@ handle_call(R = {'REQUEST', Token, _ReqNum, _Op}, _From, State) ->
   end;
 handle_call(Call, _From, State) ->
   io:format("Unknown call: ~p~n", [Call]),
-  Timeout = case is_primary(State) of
-              true -> 0;
-              false -> ?WAIT
-            end,
-  {reply, {ok, Call}, State, Timeout}.
+  {reply, {ok, Call}, State, get_timeout(State)}.
+
+get_timeout(State) ->
+  case is_primary(State) of
+      true -> 0;
+      false -> ?WAIT
+  end.
+
 
 handle_req_with_client(R = {'REQUEST', _Token, ReqNum, _Op},
                        {Max, Result},
@@ -266,38 +276,37 @@ get_arg(Arg, Args) ->
     {Arg, Res} -> Res
   end.
 
+%% Config tools
 find_by_name(Name, Config) ->
-  find_by_name(tuple_size(Config), Name, Config).
-
-find_by_name(I, _Name, _Config) when I =:= 0 ->
-  not_found;
-find_by_name(I, Name, Config) ->
-  {N, Host} = element(I, Config),
-  case N of
-    Name -> {?elem2idx(I), {N, Host}};
-    _ -> find_by_name(I - 1, Name, Config)
+  case lists:keyfind(Name, 1, Config) of
+    false -> not_found;
+    Res when is_tuple(Res) -> {get_index(Res, Config), Res}
   end.
 
-find_by_index(I, Config) ->
-  element(?idx2elem(I), Config).
+get_index(Conf, Config) ->
+  get_index(1, Conf, Config).
+
+get_index(Res, Conf, [Conf|_]) -> Res;
+get_index(_Res, _Conf, []) -> not_found;
+get_index(Res, Conf, [_H|T]) -> get_index(Res+1, Conf, T).
+
+
+find_by_index(1, [E|_]) -> E;
+find_by_index(I, [_|T]) ->
+  find_by_index(I-1,T).
 
 not_me(Index, Config) ->
-  not_me(tuple_size(Config), ?idx2elem(Index), Config, []).
-
-not_me(C, _E, _Config, Res) when C =:= 0 ->
-  Res;
-not_me(E, E, Config, Res) -> not_me(E-1, E, Config, Res);
-not_me(C, E, Config, Res) ->
-  not_me(C-1, E, Config, [element(C, Config)|Res]).
+  {Me, _} = me(Index, Config),
+  lists:keydelete(Me, 1, Config).
 
 me(Index, Config) ->
-  element(?idx2elem(Index), Config).
+    lists:nth(Index, Config).
 
 assert_host(Host) ->
   Host = node().
 
 view_to_index(View, Config) ->
-  View rem tuple_size(Config).
+  View rem length(Config).
 
 is_primary(#state{index=Index, view=View, config=Config}) ->
   is_primary_in_view(Index, View, Config).
@@ -306,7 +315,7 @@ is_primary_in_view(Index, View, Config) ->
   view_to_index(View, Config) =:= Index.
 
 submajority(Config) ->
-  tuple_size(Config) div 2.
+  length(Config) div 2.
 
 calculate_timeout(State) ->
   case is_primary(State) of
