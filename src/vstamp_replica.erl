@@ -40,7 +40,7 @@
 -type client_req_trace() :: { op_num() | -1, result() | undefined }.
 -type token() :: reference().
 -type result() :: any().
--type client_table() :: map(token(), client_req_trace()).
+-type client_table() :: map:map(token(), client_req_trace()).
 
 %%% Macros
 -define(cluster_size(T), tuple_size(T)).

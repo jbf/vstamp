@@ -56,7 +56,8 @@ assert_log_test() ->
                       Fun(),
                       erlang:error({failed, Line})
                     catch
-                        error:{assertEqual_failed, _} -> ok
+                        error:{assertEqual_failed, _} -> ok;
+                        error:{assertEqual, _} -> ok
                     end
                 end,
                 assertReqLines([{1, {'OP', asf, 1, op1}}], [{2, {'OP2', asf2, 3, op2}}])).

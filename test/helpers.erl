@@ -1,9 +1,7 @@
 -module(helpers).
 
--export([ start_node/3
-        %, start_nodes/1
-        , start_local/1
-        , stop_node/1]).
+-export([ start_local/1
+        , stop_cluster/1]).
 
 -compile(export_all).
 
