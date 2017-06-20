@@ -1,4 +1,4 @@
--module(viewstamp_unit_tests).
+-module(vstamp_replica_tests).
 
 -include_lib("eunit/include/eunit.hrl").
 
@@ -8,33 +8,33 @@ config() -> [{foo, node()},
 
 me_test_() ->
   N = node(),
-  [ ?_assertEqual({foo, N}, vstamp_replica:me(1, config()))
-  , ?_assertEqual({baz, N}, vstamp_replica:me(3, config()))
-  , ?_assertError(function_clause, vstamp_replica:me(4, config())) ].
+  [ ?_assertEqual({foo, N}, vstamp_config_lib:me(1, config()))
+  , ?_assertEqual({baz, N}, vstamp_config_lib:me(3, config()))
+  , ?_assertError(function_clause, vstamp_config_lib:me(4, config())) ].
 
 not_me_test_() ->
   List = config(),
   NotFoo = List -- [{foo, node()}],
   NotBar = List -- [{bar, node()}],
-  [ ?_assertEqual(NotFoo, vstamp_replica:not_me(1, config()))
-  , ?_assertEqual(NotBar, vstamp_replica:not_me(2, config()))
-  , ?_assertError(function_clause, vstamp_replica:not_me(4, config())) ].
+  [ ?_assertEqual(NotFoo, vstamp_config_lib:not_me(1, config()))
+  , ?_assertEqual(NotBar, vstamp_config_lib:not_me(2, config()))
+  , ?_assertError(function_clause, vstamp_config_lib:not_me(4, config())) ].
 
 find_by_name_test_() ->
   N = node(),
-  [ ?_assertEqual({1, {foo, N}}, vstamp_replica:find_by_name(foo, config()))
-  , ?_assertEqual({3, {baz, N}}, vstamp_replica:find_by_name(baz, config()))
-  , ?_assertEqual(not_found, vstamp_replica:find_by_name(quux, config())) ].
+  [ ?_assertEqual({1, {foo, N}}, vstamp_config_lib:find_by_name(foo, config()))
+  , ?_assertEqual({3, {baz, N}}, vstamp_config_lib:find_by_name(baz, config()))
+  , ?_assertEqual(not_found, vstamp_config_lib:find_by_name(quux, config())) ].
 
 submajority_test_() ->
-  [ ?_assertEqual(1, vstamp_replica:submajority(config()))
-  , ?_assertEqual(2, vstamp_replica:submajority([a,b,c,d]))
-  , ?_assertEqual(0, vstamp_replica:submajority([a])) ].
+  [ ?_assertEqual(1, vstamp_config_lib:submajority(config()))
+  , ?_assertEqual(2, vstamp_config_lib:submajority([a,b,c,d]))
+  , ?_assertEqual(0, vstamp_config_lib:submajority([a])) ].
 
 post_three_ops_test_() ->
   {setup,
     with_nodes([foo, bar, baz]),
-    fun helpers:stop_cluster/1,
+    fun vstamp_replica_test_lib:stop_cluster/1,
     fun([Primary, Secondary, Tertiary|_Nodes]) ->
         {ok, Tok} = vstamp_replica:get_client_token(Primary),
         vstamp_replica:request(Primary, Tok, 1, foo),
@@ -64,7 +64,7 @@ assert_log_test() ->
 
 with_nodes(Nodes) ->
   fun() ->
-    Res = helpers:start_local(Nodes),
+    Res = vstamp_replica_test_lib:start_local(Nodes),
     lists:map(fun(E) -> element(3, E) end, Res)
   end.
 

@@ -1,0 +1,6 @@
+{application, vstamp_replica,
+ [{vsn, "0.0.1"},
+  {modules, [vstamp_replica]},
+  {registered, []},
+  {mod, {vstamp_replica, []}}
+ ]}.

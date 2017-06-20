@@ -1,11 +1,11 @@
--module(helpers).
+-module(vstamp_replica_test_lib).
 
 -export([ start_local/1
         , stop_cluster/1]).
 
 -compile(export_all).
 
--include("../include/vrtypes.hrl").
+-include("include/vrtypes.hrl").
 
 start_local(VRNames) ->
   Node = node(),

@@ -2,9 +2,7 @@
 
 -behavior(gen_server).
 
-%-ifdef(TEST).
--compile(export_all).
-%-endif.
+-include("include/vrtypes.hrl").
 
 %%% API
 -export([ get_client_token/1
@@ -26,37 +24,6 @@
         , terminate/2
         ]).
 
--include("../include/vrtypes.hrl").
-
--type replica() :: {name(), host()}.
--type name() :: atom().
--type host() :: atom().
--type config() :: [ replica() ].
--type replica_num() :: non_neg_integer().
--type view_num() :: non_neg_integer().
--type op_num() :: non_neg_integer() | -1.
--type log() :: list().
--type commit_num() :: non_neg_integer() | undefined.
--type client_req_trace() :: { op_num() | -1, result() | undefined }.
--type token() :: reference().
--type result() :: any().
--type client_table() :: map:map(token(), client_req_trace()).
-
-%%% Macros
--define(cluster_size(T), tuple_size(T)).
-
--define(WAIT, 7000).
--define(PING, 5000).
--define(TIMEOUT, 1000).
-
--record(state, { index :: replica_num()
-               , config :: config()
-               , view :: view_num()
-               , commit :: commit_num()
-               , op_num = -1 :: op_num()
-               , req_trace = #{} :: client_table()
-               , log = [] :: log()
-               }).
 
 %%% API
 get_client_token(Replica) ->
@@ -82,7 +49,7 @@ init(Args) ->
   View = 1,
   Config = get_arg(config, Args),
   Timeout = 0,
-  Commit = case index =:= 1 of
+  Commit = case Index =:= 1 of
              true -> 0;
              _ -> undefined
            end,
@@ -99,7 +66,7 @@ handle_call(get_state, _From, State) ->
 handle_call(get_log, _From, State = #state{log=Log}) ->
   {reply, {ok, Log}, State, get_timeout(State)};
 handle_call(R = {'REQUEST', Token, _ReqNum, _Op}, _From, State) ->
-  case is_primary(State) of
+  case vstamp_config_lib:is_primary(State) of
     false -> {reply, {error, not_primary}, State, ?WAIT}; %% paper says drop, why?
     true ->
         Clients = State#state.req_trace,
@@ -114,7 +81,7 @@ handle_call(Call, _From, State) ->
   {reply, {ok, Call}, State, get_timeout(State)}.
 
 get_timeout(State) ->
-  case is_primary(State) of
+  case vstamp_config_lib:is_primary(State) of
       true -> 0;
       false -> ?WAIT
   end.
@@ -136,7 +103,7 @@ do_handle_request(R = {'REQUEST', Token, ReqNum, _Op}, State) ->
   NewTraces = maps:put(Token, NewReqTrace, State#state.req_trace),
   NewState = State#state{req_trace=NewTraces, op_num=NewOpNum, log=NewLog},
   case do_or_timeout(R, NewState) of
-    {timeout, AbortState} ->
+    {abort, AbortState} ->
       {reply, {error, {timeout, R}}, AbortState, ?PING};
     {committed, CommitState, Res} ->
       FinalTrace = maps:put(Token, {ReqNum, Res}, State#state.req_trace),
@@ -148,14 +115,14 @@ do_or_timeout(R, S = #state{config=Config}) ->
   OpNum = S#state.op_num,
   CurrentCommit = S#state.commit,
   Index = S#state.index,
-  send(not_me(Index, Config), {'PREPARE', Index, View, R, OpNum, CurrentCommit}),
+  send(vstamp_config_lib:not_me(Index, Config), {'PREPARE', Index, View, R, OpNum, CurrentCommit}),
   do_or_timeout(R, S, []).
 
 do_or_timeout(R, S = #state{config=Config}, Replies) ->
   View = S#state.view,
   OpNum = S#state.op_num,
   NumReplies = length(Replies),
-  Submajority = submajority(Config),
+  Submajority = vstamp_config_lib:submajority(Config),
   case NumReplies of
     N when N < Submajority ->
       receive
@@ -185,7 +152,7 @@ send(Nodes, Msg) ->
 handle_cast(Msg = {'PREPARE', From, View, _R, _OpNum, Commit}, State) ->
   State0 = maybe_commit(From, View, Commit, State),
   State1 = maybe_accept_prepare(Msg, State0),
-  Timeout = calculate_timeout(State),
+  Timeout = vstamp_config_lib:calculate_timeout(State),
   {noreply, State1, Timeout};
 
 handle_cast({'COMMIT', From, View, Commit}, State) ->
@@ -200,7 +167,7 @@ maybe_commit(From, View, Commit, State) ->
     N when N < MyView -> %% maybe tell initiator view has changed?
       State;
     N when N =:= MyView ->
-      case is_primary_in_view(From, View, State#state.config) of
+      case vstamp_config_lib:is_primary_in_view(From, View, State#state.config) of
         true ->  commit_committed(Commit, State);
         false -> State %% maybe tell?
       end
@@ -224,8 +191,8 @@ maybe_accept_prepare({'PREPARE', From, View, R, OpNum, _Commit}, State) ->
            end,
   MyView = State#state.view,
   Config = State#state.config,
-  case is_current_view(View, MyView) andalso
-       is_primary_in_view(From, View, State#state.config) andalso
+  case vstamp_config_lib:is_current_view(View, MyView) andalso
+       vstamp_config_lib:is_primary_in_view(From, View, State#state.config) andalso
        ((TopNum =:= OpNum -1) orelse (TopNum =:= ok)) of
     true ->
       send1(From, Config, {'PREPARE_OK', View, OpNum, State#state.index}),
@@ -234,20 +201,20 @@ maybe_accept_prepare({'PREPARE', From, View, R, OpNum, _Commit}, State) ->
   end.
 
 send1(To, Config, Msg) ->
-  NameNode = find_by_index(To, Config),
+  NameNode = vstamp_config_lib:find_by_index(To, Config),
   NameNode ! Msg.
 
 handle_info({'PREPARE_OK', _View, _OpNum, _Other} = Msg, State) ->
   io:format("Delayed message: ~p~n", [Msg]),
-  Timeout = calculate_timeout(State),
+  Timeout = vstamp_config_lib:calculate_timeout(State),
   {noreply, State, Timeout};
 
 handle_info(timeout, State = #state{index=Index, config=Config, view=View}) ->
-  Timeout = calculate_timeout(State),
+  Timeout = vstamp_config_lib:calculate_timeout(State),
   Committed = State#state.commit,
-  case is_primary(State) of
+  case vstamp_config_lib:is_primary(State) of
     %% No op before timeout. I am the primary, send out periodic heartbeat.
-    true -> send(not_me(Index, Config), {'COMMIT', Index, View, Committed});
+    true -> send(vstamp_config_lib:not_me(Index, Config), {'COMMIT', Index, View, Committed});
     %% I am not the primary. TODO: initiate view change here.
     false -> ok
   end,
@@ -260,8 +227,8 @@ code_change(_OldVsn, State, _Extra) -> {ok, State}.
 
 %%% Helpers
 do_start(Name, Args, StartFun) ->
-  case find_by_name(Name, get_config(Args)) of
-    {Index, {Name, Host}} -> assert_host(Host),
+  case vstamp_config_lib:find_by_name(Name, get_config(Args)) of
+    {Index, {Name, Host}} -> vstamp_config_lib:assert_host(Host),
                              StartFun({local, Name}, ?MODULE,
                                       [{index, Index}] ++ Args, []);
     _ -> {error, host_not_in_config}
@@ -275,53 +242,3 @@ get_arg(Arg, Args) ->
     false -> undefined;
     {Arg, Res} -> Res
   end.
-
-%% Config tools
-find_by_name(Name, Config) ->
-  case lists:keyfind(Name, 1, Config) of
-    false -> not_found;
-    Res when is_tuple(Res) -> {get_index(Res, Config), Res}
-  end.
-
-get_index(Conf, Config) ->
-  get_index(1, Conf, Config).
-
-get_index(Res, Conf, [Conf|_]) -> Res;
-get_index(_Res, _Conf, []) -> not_found;
-get_index(Res, Conf, [_H|T]) -> get_index(Res+1, Conf, T).
-
-
-find_by_index(1, [E|_]) -> E;
-find_by_index(I, [_|T]) ->
-  find_by_index(I-1,T).
-
-not_me(Index, Config) ->
-  {Me, _} = me(Index, Config),
-  lists:keydelete(Me, 1, Config).
-
-me(Index, Config) ->
-    lists:nth(Index, Config).
-
-assert_host(Host) ->
-  Host = node().
-
-view_to_index(View, Config) ->
-  View rem length(Config).
-
-is_primary(#state{index=Index, view=View, config=Config}) ->
-  is_primary_in_view(Index, View, Config).
-
-is_primary_in_view(Index, View, Config) ->
-  view_to_index(View, Config) =:= Index.
-
-submajority(Config) ->
-  length(Config) div 2.
-
-calculate_timeout(State) ->
-  case is_primary(State) of
-    true -> ?PING;
-    false -> ?WAIT
-  end.
-
-is_current_view(View1, View2) when View1 =:= View2 -> true;
-is_current_view(_View1, _View2) -> false.
