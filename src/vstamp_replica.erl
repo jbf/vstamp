@@ -77,7 +77,7 @@ handle_call(R = {'REQUEST', Token, _ReqNum, _Op}, _From, State) ->
         end
   end;
 handle_call(Call, _From, State) ->
-  io:format("Unknown call: ~p~n", [Call]),
+  lager:notice("Unknown call: ~p~n", [Call]),
   {reply, {ok, Call}, State, get_timeout(State)}.
 
 get_timeout(State) ->
@@ -141,7 +141,7 @@ do_or_timeout(R, S = #state{config=Config}, Replies) ->
   end.
 
 do_commit(R = {_R, _T, _N, Op}, S) ->
-  io:format("COMMIT: ~p, STATE: ~p~n", [R, S]),
+  lager:info("COMMIT: ~p, STATE: ~p~n", [R, S]),
   {committed, S#state{commit=S#state.op_num}, {'op_committed:', Op}}.
 
 send(Nodes, Msg) ->
@@ -203,7 +203,7 @@ send1(To, Config, Msg) ->
   NameNode ! Msg.
 
 handle_info({'PREPARE_OK', _View, _OpNum, _Other} = Msg, State) ->
-  io:format("Delayed message: ~p~n", [Msg]),
+  lager:debug("Delayed message: ~p~n", [Msg]),
   Timeout = vstamp_config_lib:calculate_timeout(State),
   {noreply, State, Timeout};
 
