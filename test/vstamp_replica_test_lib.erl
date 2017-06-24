@@ -3,9 +3,7 @@
 -export([ start_local/1
         , stop_cluster/1]).
 
--compile(export_all).
-
--include("include/vrtypes.hrl").
+-include("vrtypes.hrl").
 
 start_local(VRNames) ->
   Node = node(),

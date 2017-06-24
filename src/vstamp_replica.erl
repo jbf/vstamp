@@ -2,7 +2,7 @@
 
 -behavior(gen_server).
 
--include("include/vrtypes.hrl").
+-include("vrtypes.hrl").
 
 %%% API
 -export([ get_client_token/1
@@ -87,14 +87,12 @@ get_timeout(State) ->
   end.
 
 
-handle_req_with_client(R = {'REQUEST', _Token, ReqNum, _Op},
-                       {Max, Result},
-                       State) ->
-  case ReqNum of
-    N when N < Max -> {reply, {error, {seen_req, Max}}, State, 0};
-    N when N =:= Max -> {reply, {ok, Result}, State, 0};
-    N when N > Max -> do_handle_request(R, State)
-  end.
+handle_req_with_client({'REQUEST', _T, ReqNum, _Op}, {Max, _R}, State)
+  when ReqNum < Max -> {reply, {error, {seen_req, Max}}, State, 0};
+handle_req_with_client({'REQUEST', _T, ReqNum, _Op}, {Max, Result}, State)
+  when ReqNum =:= Max -> {reply, {ok, Result}, State, 0};
+handle_req_with_client(R = {'REQUEST', _T, ReqNum, _Op}, {Max, _Result}, State)
+  when ReqNum > Max -> do_handle_request(R, State).
 
 do_handle_request(R = {'REQUEST', Token, ReqNum, _Op}, State) ->
   NewOpNum = State#state.op_num + 1,
