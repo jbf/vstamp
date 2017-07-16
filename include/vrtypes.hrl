@@ -1,7 +1,7 @@
 %%% Macros
--define(WAIT, 7000).
--define(PING, 5000).
 -define(TIMEOUT, 1000).
+-define(PING, 5000).
+-define(PING_MSG, vstamp_timeout_msg).
 
 -type replica() :: {name(), host()}.
 -type name() :: atom().
@@ -24,6 +24,7 @@
                , op_num = -1 :: op_num()
                , req_trace = #{} :: client_table()
                , log = [] :: log()
+               , primary_timer :: {reference(), timer:tref()}
                }).
 
 -define(cluster_size(X), length(X)).

@@ -11,7 +11,6 @@
         , is_primary/1
         , is_primary_in_view/3
         , submajority/1
-        , calculate_timeout/1
         , is_current_view/2
         , assert_host/1
         ]).
@@ -56,12 +55,6 @@ is_primary_in_view(Index, View, Config) ->
 
 submajority(Config) ->
   length(Config) div 2.
-
-calculate_timeout(State) ->
-  case is_primary(State) of
-    true -> ?PING;
-    false -> ?WAIT
-  end.
 
 is_current_view(View1, View2) when View1 =:= View2 -> true;
 is_current_view(_View1, _View2) -> false.

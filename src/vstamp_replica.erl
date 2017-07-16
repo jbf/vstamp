@@ -48,26 +48,26 @@ init(Args) ->
   Index = get_arg(index, Args),
   View = 1,
   Config = get_arg(config, Args),
-  Timeout = 0,
+  TimerRef = make_ref(),
+  {ok, Timer} = timer:send_interval(?PING, {TimerRef, ?PING_MSG}),
   Commit = case Index =:= 1 of
              true -> 0;
              _ -> undefined
            end,
-  {ok, #state{index=Index, config=Config, view=View, commit=Commit}, Timeout}.
+  {ok, #state{index=Index, config=Config, view=View,
+              commit=Commit, primary_timer={TimerRef, Timer}}}.
 
 handle_call(get_client_token, _From, State = #state{req_trace=Trace}) ->
   Ref = make_ref(),
-  {reply,
-   {ok, Ref},
-   State#state{req_trace=maps:put(Ref, {-1, undefined}, Trace)},
-   get_timeout(State)};
+  {reply, {ok, Ref},
+   State#state{req_trace=maps:put(Ref, {-1, undefined}, Trace)}};
 handle_call(get_state, _From, State) ->
-  {reply, {ok, State}, State, get_timeout(State)};
+  {reply, {ok, State}, State};
 handle_call(get_log, _From, State = #state{log=Log}) ->
-  {reply, {ok, Log}, State, get_timeout(State)};
+  {reply, {ok, Log}, State};
 handle_call(R = {'REQUEST', Token, _ReqNum, _Op}, _From, State) ->
   case vstamp_config_lib:is_primary(State) of
-    false -> {reply, {error, not_primary}, State, ?WAIT}; %% paper says drop, why?
+    false -> {reply, {error, not_primary}, State}; %% paper says drop, why?
     true ->
         Clients = State#state.req_trace,
         case maps:find(Token, Clients) of
@@ -78,19 +78,12 @@ handle_call(R = {'REQUEST', Token, _ReqNum, _Op}, _From, State) ->
   end;
 handle_call(Call, _From, State) ->
   lager:notice("Unknown call: ~p~n", [Call]),
-  {reply, {ok, Call}, State, get_timeout(State)}.
-
-get_timeout(State) ->
-  case vstamp_config_lib:is_primary(State) of
-      true -> 0;
-      false -> ?WAIT
-  end.
-
+  {reply, {ok, Call}, State}.
 
 handle_req_with_client({'REQUEST', _T, ReqNum, _Op}, {Max, _R}, State)
-  when ReqNum < Max -> {reply, {error, {seen_req, Max}}, State, 0};
+  when ReqNum < Max -> {reply, {error, {seen_req, Max}}, State};
 handle_req_with_client({'REQUEST', _T, ReqNum, _Op}, {Max, Result}, State)
-  when ReqNum =:= Max -> {reply, {ok, Result}, State, 0};
+  when ReqNum =:= Max -> {reply, {ok, Result}, State};
 handle_req_with_client(R = {'REQUEST', _T, ReqNum, _Op}, {Max, _Result}, State)
   when ReqNum > Max -> do_handle_request(R, State).
 
@@ -102,10 +95,10 @@ do_handle_request(R = {'REQUEST', Token, ReqNum, _Op}, State) ->
   NewState = State#state{req_trace=NewTraces, op_num=NewOpNum, log=NewLog},
   case do_or_timeout(R, NewState) of
     {abort, AbortState} ->
-      {reply, {error, {timeout, R}}, AbortState, ?PING};
+      {reply, {error, {timeout, R}}, AbortState};
     {committed, CommitState, Res} ->
       FinalTrace = maps:put(Token, {ReqNum, Res}, State#state.req_trace),
-      {reply, {ok, R, Res}, CommitState#state{req_trace=FinalTrace}, ?PING}
+      {reply, {ok, R, Res}, CommitState#state{req_trace=FinalTrace}}
   end.
 
 do_or_timeout(R, S = #state{config=Config}) ->
@@ -150,12 +143,11 @@ send(Nodes, Msg) ->
 handle_cast(Msg = {'PREPARE', From, View, _R, _OpNum, Commit}, State) ->
   State0 = maybe_commit(From, View, Commit, State),
   State1 = maybe_accept_prepare(Msg, State0),
-  Timeout = vstamp_config_lib:calculate_timeout(State),
-  {noreply, State1, Timeout};
+  {noreply, State1};
 
 handle_cast({'COMMIT', From, View, Commit}, State) ->
   NewState = maybe_commit(From, View, Commit, State),
-  {noreply, NewState, ?WAIT}.
+  {noreply, NewState}.
 
 maybe_commit(From, View, Commit, State) ->
   MyView = State#state.view,
@@ -204,19 +196,18 @@ send1(To, Config, Msg) ->
 
 handle_info({'PREPARE_OK', _View, _OpNum, _Other} = Msg, State) ->
   lager:debug("Delayed message: ~p~n", [Msg]),
-  Timeout = vstamp_config_lib:calculate_timeout(State),
-  {noreply, State, Timeout};
+  {noreply, State};
 
-handle_info(timeout, State = #state{index=Index, config=Config, view=View}) ->
-  Timeout = vstamp_config_lib:calculate_timeout(State),
+handle_info({Ref, ?PING_MSG}, State = #state{index=Index, config=Config,
+                                             view=View, primary_timer={Ref, _}}) ->
   Committed = State#state.commit,
   case vstamp_config_lib:is_primary(State) of
     %% No op before timeout. I am the primary, send out periodic heartbeat.
     true -> send(vstamp_config_lib:not_me(Index, Config), {'COMMIT', Index, View, Committed});
-    %% I am not the primary. TODO: initiate view change here.
+    %% I am not the primary.
     false -> ok
   end,
-  {noreply, State, Timeout}.
+  {noreply, State}.
 
 terminate(_Reason, _State) ->
   ok.
