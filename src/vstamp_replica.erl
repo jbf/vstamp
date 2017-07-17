@@ -51,7 +51,7 @@ init(Args) ->
   TimerRef = make_ref(),
   {ok, Timer} = timer:send_interval(?PING, {TimerRef, ?PING_MSG}),
   Commit = case Index =:= 1 of
-             true -> 0;
+             true -> -1;
              _ -> undefined
            end,
   {ok, #state{index=Index, config=Config, view=View,
@@ -71,7 +71,7 @@ handle_call(R = {'REQUEST', Token, _ReqNum, _Op}, _From, State) ->
     true ->
         Clients = State#state.req_trace,
         case maps:find(Token, Clients) of
-          error -> {reply, {error, token_not_valid}, State, 0};
+          error -> {reply, {error, token_not_valid}, State};
           {ok, T = {_Max, _Res}} ->
             handle_req_with_client(R, T, State)
         end
@@ -135,7 +135,13 @@ do_or_timeout(R, S = #state{config=Config}, Replies) ->
 
 do_commit(R = {_R, _T, _N, Op}, S) ->
   lager:info("COMMIT: ~p, STATE: ~p~n", [R, S]),
-  {committed, S#state{commit=S#state.op_num}, {'op_committed:', Op}}.
+  NewState = S#state{commit=S#state.op_num},
+  do_local_commit(NewState),
+  {committed, NewState, {'op_committed:', Op}}.
+
+do_local_commit(#state{op_num = Num, commit=Commit, log = [{Num, _Op} = TheOp |_Rest]}) when Num =:= Commit ->
+  lager:debug("Primary APPLY: op_num=~p~n", [Num]),
+  apply_ops([TheOp], Num, Commit).
 
 send(Nodes, Msg) ->
       [gen_server:abcast([Node], Name, Msg) || {Name, Node} <- Nodes].
@@ -153,25 +159,53 @@ maybe_commit(From, View, Commit, State) ->
   MyView = State#state.view,
   case View of
     N when N > MyView -> %% initiate recovery
-      State;
-    N when N < MyView -> %% maybe tell initiator view has changed?
+      exit('TODO: can_not_do_view_change');
+    N when N < MyView -> %% TODO: maybe tell initiator view has changed?
       State;
     N when N =:= MyView ->
       case vstamp_config_lib:is_primary_in_view(From, View, State#state.config) of
-        true ->  commit_committed(Commit, State);
-        false -> State %% maybe tell?
+        true -> commit_committed(Commit, State);
+        false -> lager:notice("Seeing non-primary COMMIT ~p~n", [State#state.commit]),
+                 State
       end
   end.
 
-commit_committed(To, State = #state{commit=Commit}) when To =:= Commit ->
+%% No ops to commit yet, primary starts with 'commit = 0'
+commit_committed(_To = -1, State = #state{commit=undefined}) ->
   State;
-commit_committed(_, State = #state{log=[]}) -> %% Initiate recovery
+%% Already committed
+commit_committed(To, State = #state{commit=Commit}) when To < Commit andalso
+                                                         Commit =/= undefined ->
   State;
-commit_committed(To, State = #state{log=[{Num, _}|_]}) when To > Num ->
-  %% Initiate recovery
+%% No new ops
+commit_committed(To, State = #state{commit=C}) when To =:= C ->
   State;
-commit_committed(To, State = #state{log=[{Num, _}|_]}) when To =< Num ->
+%% Real commit, but we don't have a log
+commit_committed(_, _State = #state{log=[]}) ->
+  exit('TODO: need_log_replay');
+%% Real commit, but we don't have enough log
+commit_committed(To, _State = #state{log=[{Num, _}|_]}) when To > Num ->
+  exit('TODO: need_log_replay');
+%% First commit
+commit_committed(To, State = #state{log=[{Num, _}|_]=Log, commit=undefined}) when To =< Num ->
+  lager:debug("Initial commit"),
+  apply_ops(lists:reverse(Log), 0, To),
+  State#state{commit=To};
+%% Normal commits
+commit_committed(To, State = #state{log=[{Num, _}|_]=Log, commit=C}) when To =< Num ->
+  lager:debug("About to apply ~p ops", [To-C]),
+  apply_ops(lists:reverse(Log), C+1, To),
   State#state{commit=To}.
+
+apply_ops([], _From, _To) -> ok;
+apply_ops([{OpNum, _Op}|Rest], From, To) when OpNum < From ->
+  apply_ops(Rest, From, To);
+apply_ops([{From, Op}|Rest], From, To) when From < To ->
+  lager:debug("APPLY op_num=~p op=~p~n", [From, Op]),
+  apply_ops(Rest, From + 1, To);
+apply_ops([{From, Op}|_Rest], From, To) when From =:= To ->
+  lager:debug("APPLY op_num=~p op=~p~n", [From, Op]),
+  ok.
 
 maybe_accept_prepare({'PREPARE', From, View, R, OpNum, _Commit}, State) ->
   MyLog = State#state.log,
@@ -195,7 +229,7 @@ send1(To, Config, Msg) ->
   NameNode ! Msg.
 
 handle_info({'PREPARE_OK', _View, _OpNum, _Other} = Msg, State) ->
-  lager:debug("Delayed message: ~p~n", [Msg]),
+  lager:notice("Delayed message: ~p~n", [Msg]),
   {noreply, State};
 
 handle_info({Ref, ?PING_MSG}, State = #state{index=Index, config=Config,
